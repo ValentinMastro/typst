@@ -34,7 +34,6 @@ clap = { workspace = true, features = ["string"] }
 clap_complete = { workspace = true }
 clap_complete_nushell = { workspace = true }
 codespan-reporting = { workspace = true }
-color-print = { workspace = true }
 comemo = { workspace = true }
 dirs = { workspace = true }
 ecow = { workspace = true }
@@ -83,7 +82,6 @@ clap = { workspace = true, features = ["string"] }
 clap_complete = { workspace = true }
 clap_complete_nushell = { workspace = true }
 clap_mangen = { workspace = true }
-color-print = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 typst-utils = { workspace = true }

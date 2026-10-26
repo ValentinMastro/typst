@@ -1,27 +1,34 @@
 use std::io::{self, Read};
 
+/// Wraps a string literal in ANSI escape codes for bright cyan text.
+macro_rules! cyan {
+    ($s:expr) => {
+        concat!("\x1b[96m", $s, "\x1b[39m")
+    };
+}
+
 /// This is shown to users who just type `typst` the first time.
 #[rustfmt::skip]
-const GREETING: &str = color_print::cstr!("\
-<s>Welcome to Typst, we are glad to have you here!</> ❤️
-
-If you are new to Typst, <s>start with the tutorial</> at \
-<u>https://typst.app/docs/tutorial/</>. To get a quick start with your first \
-project, <s>choose a template</> on <u>https://typst.app/universe/</>.
-
-Here are the <s>most important commands</> you will be using:
-
-- Compile a file once: <c!>typst compile file.typ</>
-- Compile a file on every change: <c!>typst watch file.typ</>
-- Set up a project from a template: <c!>typst init @preview/<<TEMPLATE>></>
-
-Learn more about these commands by running <c!>typst help</>.
-
-If you have a question, we and our community would be glad to help you out on \
-the <s>Typst Forum</> at <u>https://forum.typst.app/</>.
-
-Happy Typsting!
-");
+const GREETING: &str = concat!(
+    bold!("Welcome to Typst, we are glad to have you here!"), " ❤️\n",
+    "\n",
+    "If you are new to Typst, ", bold!("start with the tutorial"), " at ",
+    underline!("https://typst.app/docs/tutorial/"), ". To get a quick start with your first ",
+    "project, ", bold!("choose a template"), " on ", underline!("https://typst.app/universe/"), ".\n",
+    "\n",
+    "Here are the ", bold!("most important commands"), " you will be using:\n",
+    "\n",
+    "- Compile a file once: ", cyan!("typst compile file.typ"), "\n",
+    "- Compile a file on every change: ", cyan!("typst watch file.typ"), "\n",
+    "- Set up a project from a template: ", cyan!("typst init @preview/<TEMPLATE>"), "\n",
+    "\n",
+    "Learn more about these commands by running ", cyan!("typst help"), ".\n",
+    "\n",
+    "If you have a question, we and our community would be glad to help you out on ",
+    "the ", bold!("Typst Forum"), " at ", underline!("https://forum.typst.app/"), ".\n",
+    "\n",
+    "Happy Typsting!\n",
+);
 
 /// Greets (and exists) if not yet greeted.
 pub fn greet() {

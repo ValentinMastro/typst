@@ -32,15 +32,29 @@ Typst {version}
 {all-args}{after-help}\
 ";
 
+/// Wraps a string literal in ANSI escape codes for bold text.
+macro_rules! bold {
+    ($s:expr) => {
+        concat!("\x1b[1m", $s, "\x1b[22m")
+    };
+}
+
+/// Wraps a string literal in ANSI escape codes for underlined text.
+macro_rules! underline {
+    ($s:expr) => {
+        concat!("\x1b[4m", $s, "\x1b[24m")
+    };
+}
+
 /// Adds a list of useful links after the normal help.
 #[rustfmt::skip]
-const AFTER_HELP: &str = color_print::cstr!("\
-<s><u>Resources:</></>
-  <s>Tutorial:</>                 https://typst.app/docs/tutorial/
-  <s>Reference documentation:</>  https://typst.app/docs/reference/
-  <s>Templates & Packages:</>     https://typst.app/universe/
-  <s>Forum for questions:</>      https://forum.typst.app/
-");
+const AFTER_HELP: &str = concat!(
+    bold!(underline!("Resources:")), "\n",
+    "  ", bold!("Tutorial:"), "                 https://typst.app/docs/tutorial/\n",
+    "  ", bold!("Reference documentation:"), "  https://typst.app/docs/reference/\n",
+    "  ", bold!("Templates & Packages:"), "     https://typst.app/universe/\n",
+    "  ", bold!("Forum for questions:"), "      https://forum.typst.app/\n",
+);
 
 const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))

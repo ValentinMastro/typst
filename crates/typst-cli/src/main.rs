@@ -1,3 +1,4 @@
+#[macro_use]
 mod args;
 mod compile;
 mod completions;

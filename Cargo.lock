@@ -3522,7 +3522,6 @@ dependencies = [
  "codex",
  "comemo",
  "ecow",
- "flate2",
  "image",
  "indexmap",
  "infer",

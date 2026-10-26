@@ -23,7 +23,6 @@ typst-utils = { workspace = true, features = ["full"] }
 base64 = { workspace = true }
 comemo = { workspace = true }
 ecow = { workspace = true }
-flate2 = { workspace = true }
 hayro = { workspace = true }
 hayro-svg = { workspace = true }
 image = { workspace = true }

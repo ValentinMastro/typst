@@ -3586,7 +3586,6 @@ dependencies = [
  "base64",
  "comemo",
  "ecow",
- "flate2",
  "hayro",
  "hayro-svg",
  "image",

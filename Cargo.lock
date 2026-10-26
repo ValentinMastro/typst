@@ -3334,7 +3334,6 @@ dependencies = [
  "bumpalo",
  "comemo",
  "ecow",
- "palette",
  "rustc-hash",
  "time",
  "typst-assets",

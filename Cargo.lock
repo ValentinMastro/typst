@@ -3420,8 +3420,6 @@ dependencies = [
  "icu_provider_blob",
  "icu_segmenter",
  "kurbo",
- "libm",
- "memchr",
  "rustc-hash",
  "rustybuzz",
  "smallvec",

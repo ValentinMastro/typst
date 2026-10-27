@@ -447,9 +447,19 @@ fn verdict<'a>(
     // fields before real synthesis runs (during preparation). It's really
     // unfortunate that we have to do this, but otherwise
     // `show figure.where(kind: table)` won't work :(
+    //
+    // Synthesis can be expensive (e.g. for tables), so we only do this when a
+    // show rule could actually look at the element's fields.
     let mut elem = elem;
     let mut slot;
-    if !prepared && elem.can::<dyn Synthesize>() {
+    if !prepared
+        && elem.can::<dyn Synthesize>()
+        && styles.recipes().any(|recipe| {
+            recipe
+                .selector()
+                .is_some_and(|selector| selector_inspects_fields(selector, elem.elem()))
+        })
+    {
         slot = elem.clone();
         slot.with_mut::<dyn Synthesize>()
             .unwrap()
@@ -527,6 +537,18 @@ fn verdict<'a>(
     }
 
     Some(Verdict { prepared, map, step })
+}
+
+/// Whether matching the selector against an element of type `elem` may
+/// inspect the element's fields (and thus its synthesized fields).
+fn selector_inspects_fields(selector: &Selector, elem: Element) -> bool {
+    match selector {
+        Selector::Elem(func, Some(_)) => *func == elem,
+        Selector::Or(selectors) | Selector::And(selectors) => {
+            selectors.iter().any(|sel| selector_inspects_fields(sel, elem))
+        }
+        _ => false,
+    }
 }
 
 /// This is only executed the first time an element is visited.

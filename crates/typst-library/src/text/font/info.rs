@@ -118,14 +118,19 @@ impl FontInfo {
         // Determine the unicode coverage.
         let mut coverage = Coverage::default();
         if let Some(cmap) = ttf.tables().cmap {
-            for subtable in cmap.subtables {
+            let raw = ttf.raw_face().table(ttf_parser::Tag::from_bytes(b"cmap"));
+            for (index, subtable) in cmap.subtables.into_iter().enumerate() {
                 if subtable.is_unicode() {
                     let mut subtable_coverage =
                         CoverageBuilder::with_capacity(coverage.0.len());
-                    subtable.codepoints(|c| {
-                        // We expect codepoints in CMAP subtables to be already sorted
-                        subtable_coverage.add_codepoint(c);
-                    });
+                    // We expect codepoints in CMAP subtables to be already sorted
+                    if !raw.is_some_and(|raw| {
+                        cmap_ranges(raw, index, |range| {
+                            subtable_coverage.add_codepoint_range(range);
+                        })
+                    }) {
+                        subtable.codepoints(|c| subtable_coverage.add_codepoint(c));
+                    }
                     coverage = coverage.union(&subtable_coverage.build());
                 }
             }
@@ -267,6 +272,73 @@ fn typographic_family(mut family: &str) -> &str {
     family = &family[..len];
 
     family
+}
+
+/// Calls `f` with the ranges of codepoints mapped by the `index`-th subtable
+/// of the raw `cmap` table, in the order in which they are defined.
+///
+/// This yields the same codepoints as `ttf_parser`'s `Subtable::codepoints`,
+/// but range by range instead of codepoint by codepoint, which is much faster
+/// for large fonts. Only formats 4 and 12 are supported. Returns `false`
+/// without calling `f` if the subtable has another format or is malformed.
+fn cmap_ranges(cmap: &[u8], index: usize, mut f: impl FnMut(Range<u32>)) -> bool {
+    let u16_at = |data: &[u8], at: usize| {
+        data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    };
+    let u32_at = |data: &[u8], at: usize| {
+        data.get(at..at + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+
+    // The encoding records start after the version and the number of tables.
+    // Each record consists of a platform ID, an encoding ID and an offset.
+    let Some(data) = u32_at(cmap, 4 + 8 * index + 4)
+        .and_then(|offset| cmap.get(usize::try_from(offset).ok()?..))
+    else {
+        return false;
+    };
+
+    match u16_at(data, 0) {
+        // Segment mapping to delta values.
+        Some(4) => {
+            let Some(seg_count) = u16_at(data, 6).map(|x2| usize::from(x2 / 2)) else {
+                return false;
+            };
+            let ends = 14;
+            let starts = ends + 2 * seg_count + 2;
+            if data.len() < starts + 2 * seg_count {
+                return false;
+            }
+            for i in 0..seg_count {
+                let start = u16_at(data, starts + 2 * i).unwrap();
+                let end = u16_at(data, ends + 2 * i).unwrap();
+                // The 0xFFFF value is special and indicates the end of codes.
+                if start == end && start == 0xFFFF {
+                    break;
+                }
+                f(u32::from(start)..u32::from(end) + 1);
+            }
+            true
+        }
+        // Segmented coverage.
+        Some(12) => {
+            let Some(count) = u32_at(data, 12).and_then(|c| usize::try_from(c).ok())
+            else {
+                return false;
+            };
+            let groups = 16;
+            if data.len().saturating_sub(groups) / 12 < count {
+                return false;
+            }
+            for i in 0..count {
+                let start = u32_at(data, groups + 12 * i).unwrap();
+                let end = u32_at(data, groups + 12 * i + 4).unwrap();
+                f(start..end.saturating_add(1));
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 /// A compactly encoded set of codepoints.
@@ -492,5 +564,28 @@ mod tests {
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18]
         );
         assert_eq!(combined.0, vec![0, 15, 1, 3]);
+    }
+
+    #[test]
+    fn test_cmap_ranges_match_codepoints() {
+        let mut checked = 0;
+        for data in typst_dev_assets::fonts() {
+            let count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
+            for index in 0..count {
+                let Ok(ttf) = ttf_parser::Face::parse(data, index) else { continue };
+                let Some(cmap) = ttf.tables().cmap else { continue };
+                let raw = ttf.raw_face().table(ttf_parser::Tag::from_bytes(b"cmap"));
+                for (i, subtable) in cmap.subtables.into_iter().enumerate() {
+                    let mut expected = CoverageBuilder::with_capacity(0);
+                    subtable.codepoints(|c| expected.add_codepoint(c));
+                    let mut actual = CoverageBuilder::with_capacity(0);
+                    if cmap_ranges(raw.unwrap(), i, |r| actual.add_codepoint_range(r)) {
+                        assert_eq!(actual.build().0, expected.build().0);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 0);
     }
 }

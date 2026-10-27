@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use ecow::{EcoString, EcoVec, eco_format, eco_vec};
-use typst_utils::debug;
+use typst_utils::{LazyHash, debug};
 
 use crate::kind::ModeAfter;
 use crate::{
@@ -49,18 +49,41 @@ pub struct SyntaxNode {
 ///     }
 /// };
 /// ```
-#[derive(Clone, Eq, PartialEq, Hash)]
+///
+/// The hash of inner nodes is cached and shared between all clones of a
+/// node: closures are hashed together with their syntax node (to memoize
+/// their calls), so the same subtrees would otherwise be hashed over and
+/// over. Mutating an inner node resets its cached hash, and since a child
+/// can only be reached mutably through its parent, so does mutating any of
+/// its descendants.
+#[derive(Clone, Eq, Hash)]
 enum Node {
     Leaf(EcoString, SyntaxKind),
-    Inner(Arc<InnerNode>, SyntaxKind),
+    Inner(Arc<LazyHash<InnerNode>>, SyntaxKind),
     Error(Arc<ErrorNode>, SyntaxKind),
     Warning(Arc<WarningWrapper>, SyntaxKind),
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Leaf(a, ak), Self::Leaf(b, bk)) => a == b && ak == bk,
+            // Compare the nodes themselves rather than only their hashes, as
+            // the `PartialEq` implementation of `LazyHash` would.
+            (Self::Inner(a, ak), Self::Inner(b, bk)) => {
+                (Arc::ptr_eq(a, b) || ***a == ***b) && ak == bk
+            }
+            (Self::Error(a, ak), Self::Error(b, bk)) => a == b && ak == bk,
+            (Self::Warning(a, ak), Self::Warning(b, bk)) => a == b && ak == bk,
+            _ => false,
+        }
+    }
 }
 
 /// Data attached to a node, accessed by reference via [`Node::node_ref`].
 enum NodeRef<'a> {
     Leaf(&'a EcoString),
-    Inner(&'a Arc<InnerNode>),
+    Inner(&'a Arc<LazyHash<InnerNode>>),
     Error(&'a Arc<ErrorNode>),
 }
 
@@ -84,7 +107,7 @@ impl Node {
         loop {
             match data {
                 Node::Leaf(_, _) | Node::Error(_, _) => break None,
-                Node::Inner(inner, _) => break Some(Arc::make_mut(inner)),
+                Node::Inner(inner, _) => break Some(&mut **Arc::make_mut(inner)),
                 Node::Warning(warn, _) => data = &mut Arc::make_mut(warn).child,
             }
         }
@@ -116,7 +139,7 @@ impl SyntaxNode {
     pub fn inner(kind: SyntaxKind, children: Vec<SyntaxNode>) -> Self {
         debug_assert!(!kind.is_error());
         Self {
-            data: Node::Inner(Arc::new(InnerNode::new(children)), kind),
+            data: Node::Inner(Arc::new(LazyHash::new(InnerNode::new(children))), kind),
             span: Span::detached(),
         }
     }
@@ -614,7 +637,9 @@ impl SyntaxNode {
         &mut self,
     ) -> Option<(&mut InnerNode, SyntaxKind, Span)> {
         match &mut self.data {
-            Node::Inner(inner, kind) => Some((Arc::make_mut(inner), *kind, self.span)),
+            Node::Inner(inner, kind) => {
+                Some((&mut **Arc::make_mut(inner), *kind, self.span))
+            }
             _ => None,
         }
     }

@@ -3320,7 +3320,6 @@ dependencies = [
  "dirs",
  "ecow",
  "env_proxy",
- "fastrand",
  "flate2",
  "fontdb",
  "infer",

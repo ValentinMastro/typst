@@ -13,6 +13,7 @@ use {
     ecow::eco_format,
     once_cell::sync::OnceCell,
     serde::Deserialize,
+    std::hash::{BuildHasher, RandomState},
     std::io::{Cursor, Read},
     typst_library::diag::{PackageError, PackageResult, StrResult, bail},
 };
@@ -253,7 +254,7 @@ impl FsPackages {
         let tempdir = Tempdir::create(base_dir.join(format!(
             ".tmp-{}-{}",
             spec.version,
-            fastrand::u32(..),
+            RandomState::new().hash_one(()),
         )))
         .map_err(|err| error("failed to create temporary package directory", err))?;
 

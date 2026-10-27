@@ -22,7 +22,6 @@ codespan-reporting = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 ecow = { workspace = true }
 env_proxy = { workspace = true, optional = true }
-fastrand = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 fontdb = { workspace = true, optional = true }
 infer = { workspace = true, optional = true }
@@ -67,7 +66,7 @@ system-packages = ["dep:dirs", "universe-packages"]
 
 # Enables loading of packages from Typst Universe via
 # `packages::UniversePackages`.
-universe-packages = ["dep:flate2", "dep:tar", "dep:fastrand"]
+universe-packages = ["dep:flate2", "dep:tar"]
 
 # Enables obtaining the current date via `datetime::Time::today`.
 datetime = ["dep:chrono"]

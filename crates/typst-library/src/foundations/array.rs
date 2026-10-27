@@ -1,13 +1,16 @@
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
+use std::hash::{Hash, Hasher};
 use std::num::{NonZeroI64, NonZeroUsize};
 use std::ops::{Add, AddAssign};
+use std::sync::Arc;
 
 use comemo::Tracked;
 use ecow::{EcoString, EcoVec, eco_format};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 use typst_syntax::{Span, Spanned};
+use typst_utils::LazyHash;
 
 use crate::diag::{
     At, CallSpanned, HintedStrResult, HintedString, SourceDiagnostic, SourceResult,
@@ -71,9 +74,14 @@ pub use crate::__array as array;
 ///     .join(", ", last: " and "))
 /// ```
 #[ty(scope, cast, since = "forever")]
-#[derive(Default, Clone, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Array(EcoVec<Value>);
+#[derive(Default, Clone)]
+pub struct Array(
+    /// The values are wrapped in a [`LazyHash`] so that an array's hash is
+    /// computed at most once and shared between all clones of it. This
+    /// matters because values are hashed whenever they are passed to a
+    /// memoized function, for instance as an argument of a closure call.
+    Arc<LazyHash<EcoVec<Value>>>,
+);
 
 impl Array {
     /// Create a new, empty array.
@@ -83,7 +91,18 @@ impl Array {
 
     /// Creates a new vec, with a known capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self(EcoVec::with_capacity(capacity))
+        Self::from(EcoVec::with_capacity(capacity))
+    }
+
+    /// Mutably borrow the underlying vector, resetting the cached hash.
+    fn vec_mut(&mut self) -> &mut EcoVec<Value> {
+        let vec: &mut LazyHash<_> = Arc::make_mut(&mut self.0);
+        vec
+    }
+
+    /// Extract the underlying vector.
+    fn into_vec(self) -> EcoVec<Value> {
+        Arc::unwrap_or_clone(self.0).into_inner()
     }
 
     /// Return `true` if the length is 0.
@@ -103,19 +122,19 @@ impl Array {
 
     /// Mutably borrow the first value in the array.
     pub fn first_mut(&mut self) -> StrResult<&mut Value> {
-        self.0.make_mut().first_mut().ok_or_else(array_is_empty)
+        self.vec_mut().make_mut().first_mut().ok_or_else(array_is_empty)
     }
 
     /// Mutably borrow the last value in the array.
     pub fn last_mut(&mut self) -> StrResult<&mut Value> {
-        self.0.make_mut().last_mut().ok_or_else(array_is_empty)
+        self.vec_mut().make_mut().last_mut().ok_or_else(array_is_empty)
     }
 
     /// Mutably borrow the value at the given index.
     pub fn at_mut(&mut self, index: i64) -> StrResult<&mut Value> {
         let len = self.len();
         self.locate_opt(index, false)
-            .and_then(move |i| self.0.make_mut().get_mut(i))
+            .and_then(move |i| self.vec_mut().make_mut().get_mut(i))
             .ok_or_else(|| out_of_bounds(index, len))
     }
 
@@ -228,14 +247,14 @@ impl Array {
         /// The value to insert at the end of the array.
         value: Value,
     ) {
-        self.0.push(value);
+        self.vec_mut().push(value);
     }
 
     /// Removes the last item from the array and returns it. Fails with an error
     /// if the array is empty.
     #[func(since = "forever")]
     pub fn pop(&mut self) -> StrResult<Value> {
-        self.0.pop().ok_or_else(array_is_empty)
+        self.vec_mut().pop().ok_or_else(array_is_empty)
     }
 
     /// Inserts a value into the array at the specified index, shifting all
@@ -253,7 +272,7 @@ impl Array {
         value: Value,
     ) -> StrResult<()> {
         let i = self.locate(index, true)?;
-        self.0.insert(i, value);
+        self.vec_mut().insert(i, value);
         Ok(())
     }
 
@@ -269,7 +288,7 @@ impl Array {
         default: Option<Value>,
     ) -> StrResult<Value> {
         self.locate_opt(index, false)
-            .map(|i| self.0.remove(i))
+            .map(|i| self.vec_mut().remove(i))
             .or(default)
             .ok_or_else(|| out_of_bounds_no_default(index, self.len()))
     }
@@ -811,7 +830,7 @@ impl Array {
             vec.push(value);
         }
 
-        Array(vec)
+        Array::from(vec)
     }
 
     /// Splits an array into non-overlapping chunks, starting at the beginning,
@@ -951,7 +970,7 @@ impl Array {
                 };
 
                 let mut result = Ok(());
-                let mut vec = self.0.into_iter().enumerate().collect::<Vec<_>>();
+                let mut vec = self.into_vec().into_iter().enumerate().collect::<Vec<_>>();
                 glidesort::sort_by(&mut vec, |(i, x), (j, y)| {
                     // Because we use booleans for the comparison function, in
                     // order to keep the sort stable, we need to compare in the
@@ -1006,7 +1025,7 @@ impl Array {
                 };
 
                 let mut result = Ok(());
-                let mut vec = self.0;
+                let mut vec = self.into_vec();
                 glidesort::sort_by(vec.make_mut(), |a, b| {
                     match (key_of(a.clone()), key_of(b.clone())) {
                         (Ok(a), Ok(b)) => ops::compare(&a, &b).unwrap_or_else(|err| {
@@ -1088,7 +1107,7 @@ impl Array {
             out.push(value);
         }
 
-        Ok(Self(out))
+        Ok(Self::from(out))
     }
 
     /// Converts an array of pairs into a dictionary. The first value of each
@@ -1170,7 +1189,7 @@ cast! {
 
 impl Debug for Array {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        f.debug_list().entries(&self.0).finish()
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -1189,6 +1208,32 @@ impl Repr for Array {
     }
 }
 
+impl PartialEq for Array {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare the values rather than only their hashes, as the
+        // `PartialEq` implementation of `LazyHash` would.
+        Arc::ptr_eq(&self.0, &other.0) || self.as_slice() == other.as_slice()
+    }
+}
+
+impl Hash for Array {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Serialize for Array {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Array {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        EcoVec::deserialize(deserializer).map(Self::from)
+    }
+}
+
 impl Add for Array {
     type Output = Self;
 
@@ -1200,19 +1245,19 @@ impl Add for Array {
 
 impl AddAssign for Array {
     fn add_assign(&mut self, rhs: Self) {
-        self.0.extend(rhs.0);
+        self.vec_mut().extend(rhs.into_vec());
     }
 }
 
 impl Extend<Value> for Array {
     fn extend<T: IntoIterator<Item = Value>>(&mut self, iter: T) {
-        self.0.extend(iter);
+        self.vec_mut().extend(iter);
     }
 }
 
 impl FromIterator<Value> for Array {
     fn from_iter<T: IntoIterator<Item = Value>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        Self::from(iter.into_iter().collect::<EcoVec<_>>())
     }
 }
 
@@ -1221,7 +1266,7 @@ impl IntoIterator for Array {
     type IntoIter = ecow::vec::IntoIter<Value>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.into_vec().into_iter()
     }
 }
 
@@ -1236,13 +1281,13 @@ impl<'a> IntoIterator for &'a Array {
 
 impl From<EcoVec<Value>> for Array {
     fn from(v: EcoVec<Value>) -> Self {
-        Array(v)
+        Array(Arc::new(LazyHash::new(v)))
     }
 }
 
 impl From<&[Value]> for Array {
     fn from(v: &[Value]) -> Self {
-        Array(v.into())
+        Array::from(EcoVec::from(v))
     }
 }
 

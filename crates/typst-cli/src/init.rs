@@ -1,9 +1,8 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 
 use codespan_reporting::term::termcolor::{Color, ColorSpec, WriteColor};
 use ecow::eco_format;
-use fs_extra::dir::CopyOptions;
 use typst::diag::{FileError, StrResult, bail};
 use typst::syntax::package::{
     PackageManifest, PackageSpec, TemplateInfo, VersionlessPackageSpec,
@@ -85,13 +84,25 @@ fn scaffold_project(
         bail!("template directory does not exist (at {})", template_dir.display());
     }
 
-    fs_extra::dir::copy(
-        &template_dir,
-        project_dir,
-        &CopyOptions::new().content_only(true),
-    )
-    .map_err(|err| eco_format!("failed to create project directory ({err})"))?;
+    copy_dir(&template_dir, project_dir)
+        .map_err(|err| eco_format!("failed to create project directory ({err})"))?;
 
+    Ok(())
+}
+
+/// Recursively copies the contents of `src` into `dst`, creating `dst` if
+/// necessary.
+fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let path = entry?.path();
+        let target = dst.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_dir(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
     Ok(())
 }
 
@@ -100,7 +111,7 @@ fn print_summary(
     spec: PackageSpec,
     project_dir: &Path,
     template: &TemplateInfo,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let mut gray = ColorSpec::new();
     gray.set_fg(Some(Color::White));
     gray.set_dimmed(true);

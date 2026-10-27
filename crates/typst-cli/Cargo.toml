@@ -37,7 +37,6 @@ codespan-reporting = { workspace = true }
 comemo = { workspace = true }
 dirs = { workspace = true }
 ecow = { workspace = true }
-fs_extra = { workspace = true }
 open = { workspace = true }
 parking_lot = { workspace = true }
 pathdiff = { workspace = true }

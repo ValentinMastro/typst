@@ -357,9 +357,45 @@ fn cmap_ranges(cmap: &[u8], index: usize, mut f: impl FnMut(Range<u32>)) -> bool
 /// - 2 codepoints inside (18, 19)
 ///
 /// So the resulting encoding is `[2, 3, 4, 3, 3, 1, 2, 2]`.
+///
+/// This is the serialized representation. In memory, the set is instead
+/// stored as the sorted boundaries of its ranges, here
+/// `[2, 5, 9, 12, 15, 16, 18, 20]`, so that membership can be tested with a
+/// binary search.
 #[derive(Default, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(from = "RunLengths", into = "RunLengths")]
 pub struct Coverage(Vec<u32>);
+
+/// The run-length encoding of a [`Coverage`] set, used for serialization.
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct RunLengths(Vec<u32>);
+
+impl From<RunLengths> for Coverage {
+    fn from(RunLengths(runs): RunLengths) -> Self {
+        let mut bounds = Vec::with_capacity(runs.len());
+        let mut cursor = 0;
+        for &[gap, count] in runs.as_chunks::<2>().0 {
+            cursor += gap;
+            bounds.push(cursor);
+            cursor += count;
+            bounds.push(cursor);
+        }
+        Self(bounds)
+    }
+}
+
+impl From<Coverage> for RunLengths {
+    fn from(Coverage(bounds): Coverage) -> Self {
+        let mut runs = Vec::with_capacity(bounds.len());
+        let mut cursor = 0;
+        for &bound in &bounds {
+            runs.push(bound - cursor);
+            cursor = bound;
+        }
+        Self(runs)
+    }
+}
 
 impl Coverage {
     /// Encode a vector of codepoints.
@@ -381,18 +417,9 @@ impl Coverage {
 
     /// Whether the codepoint is covered.
     pub fn contains(&self, c: u32) -> bool {
-        let mut inside = false;
-        let mut cursor = 0;
-
-        for &run in &self.0 {
-            if (cursor..cursor + run).contains(&c) {
-                return inside;
-            }
-            cursor += run;
-            inside = !inside;
-        }
-
-        false
+        // The codepoint is inside a range if an odd number of boundaries is at
+        // or before it, i.e. if the last of them is the start of a range.
+        self.0.partition_point(|&bound| bound <= c) % 2 == 1
     }
 
     /// Iterate over all covered codepoints.
@@ -402,15 +429,8 @@ impl Coverage {
 
     /// Iterate over all continuous ranges of covered codepoints.
     fn iter_ranges(&self) -> impl Iterator<Item = Range<u32>> {
-        let mut offset = 0;
         let (pairs, _) = self.0.as_chunks::<2>();
-
-        pairs.iter().map(move |&[gap, count]| {
-            offset += gap;
-            let start = offset;
-            offset += count;
-            start..offset
-        })
+        pairs.iter().map(|&[start, end]| start..end)
     }
 
     /// Returns an encoding of the set of codepoints covered by either `self` or
@@ -454,19 +474,19 @@ impl Debug for Coverage {
 /// Incrementally builds a [`Coverage`] set from a non-decreasing series of
 /// codepoints, or ranges thereof.
 struct CoverageBuilder {
-    runs: Vec<u32>,
+    bounds: Vec<u32>,
     next: u32,
 }
 
 impl CoverageBuilder {
     /// Create a new coverage builder with at least the given capacity.
     fn with_capacity(capacity: usize) -> Self {
-        Self { runs: Vec::with_capacity(capacity), next: 0 }
+        Self { bounds: Vec::with_capacity(capacity), next: 0 }
     }
 
     /// Build the [`Coverage`] set.
     fn build(self) -> Coverage {
-        Coverage(self.runs)
+        Coverage(self.bounds)
     }
 
     /// Add a single codepoint to the set being built. Codepoints must be added
@@ -483,13 +503,11 @@ impl CoverageBuilder {
         if range.end <= self.next || range.is_empty() {
             return;
         } else if range.start <= self.next
-            && let Some(prev_count) = self.runs.last_mut()
+            && let Some(prev_end) = self.bounds.last_mut()
         {
-            *prev_count += range.end - self.next;
+            *prev_end = range.end;
         } else {
-            let gap = range.start - self.next;
-            let count = range.end - range.start;
-            self.runs.extend([gap, count]);
+            self.bounds.extend([range.start, range.end]);
         }
 
         self.next = range.end;
@@ -523,7 +541,8 @@ mod tests {
         #[track_caller]
         fn test(set: &[u32], runs: &[u32]) {
             let coverage = Coverage::from_vec(set.to_vec());
-            assert_eq!(coverage.0, runs);
+            assert_eq!(RunLengths::from(coverage.clone()).0, runs);
+            assert_eq!(Coverage::from(RunLengths(runs.to_vec())), coverage);
 
             let max = 5 + set.iter().copied().max().unwrap_or_default();
             for c in 0..max {
@@ -541,6 +560,15 @@ mod tests {
             &[18, 19, 2, 4, 9, 11, 15, 3, 3, 10],
             &[2, 3, 4, 3, 3, 1, 2, 2],
         );
+    }
+
+    #[test]
+    fn test_coverage_serialization() {
+        // The serialized form is the documented run-length encoding.
+        let coverage = Coverage::from_vec(vec![2, 3, 4, 9, 10, 11, 15, 18, 19]);
+        let json = serde_json::to_string(&coverage).unwrap();
+        assert_eq!(json, "[2,3,4,3,3,1,2,2]");
+        assert_eq!(serde_json::from_str::<Coverage>(&json).unwrap(), coverage);
     }
 
     #[test]
@@ -563,7 +591,7 @@ mod tests {
             codepoints,
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18]
         );
-        assert_eq!(combined.0, vec![0, 15, 1, 3]);
+        assert_eq!(RunLengths::from(combined).0, vec![0, 15, 1, 3]);
     }
 
     #[test]

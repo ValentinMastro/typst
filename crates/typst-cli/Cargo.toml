@@ -39,7 +39,6 @@ dirs = { workspace = true }
 ecow = { workspace = true }
 open = { workspace = true }
 parking_lot = { workspace = true }
-pathdiff = { workspace = true }
 rayon = { workspace = true }
 self-replace = { workspace = true, optional = true }
 semver = { workspace = true }

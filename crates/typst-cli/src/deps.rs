@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::args::{DepsFormat, Output};
-use crate::world::SystemWorld;
+use crate::world::{SystemWorld, diff_paths};
 
 /// Writes dependencies in the given format.
 pub fn write_deps(
@@ -168,8 +168,7 @@ fn relative_dependencies(
 ) -> io::Result<impl Iterator<Item = PathBuf>> {
     let root = world.root().to_owned();
     let current_dir = std::env::current_dir()?;
-    let relative_root =
-        pathdiff::diff_paths(&root, &current_dir).unwrap_or_else(|| root.clone());
+    let relative_root = diff_paths(&root, &current_dir).unwrap_or_else(|| root.clone());
     Ok(world.dependencies().map(move |dependency| {
         dependency
             .strip_prefix(&root)

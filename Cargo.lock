@@ -3153,7 +3153,6 @@ dependencies = [
  "memchr",
  "open",
  "parking_lot",
- "pathdiff",
  "rayon",
  "self-replace",
  "semver",

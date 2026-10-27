@@ -1,7 +1,7 @@
 use std::error;
 use std::fmt;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use ecow::{EcoString, eco_format};
@@ -162,7 +162,7 @@ impl DiagnosticWorld for SystemWorld {
                 vpath
                     .realize(self.root())
                     .ok()
-                    .and_then(|rooted| pathdiff::diff_paths(rooted, self.workdir()))
+                    .and_then(|rooted| diff_paths(&rooted, self.workdir()))
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| vpath.get_without_slash().into())
             }
@@ -362,5 +362,66 @@ impl From<Feature> for typst::Feature {
             Feature::Bundle => typst::Feature::Bundle,
             Feature::A11yExtras => typst::Feature::A11yExtras,
         }
+    }
+}
+
+/// Constructs a relative path from `base` to `path`.
+///
+/// Returns `None` if `path` is relative but `base` is absolute, or if `base`
+/// contains a `..` component that cannot be resolved.
+pub fn diff_paths(path: &Path, base: &Path) -> Option<PathBuf> {
+    if path.is_absolute() != base.is_absolute() {
+        return path.is_absolute().then(|| path.to_path_buf());
+    }
+
+    let mut ita = path.components();
+    let mut itb = base.components();
+    let mut comps: Vec<Component> = vec![];
+    loop {
+        match (ita.next(), itb.next()) {
+            (None, None) => break,
+            (Some(a), None) => {
+                comps.push(a);
+                comps.extend(ita.by_ref());
+                break;
+            }
+            (None, _) => comps.push(Component::ParentDir),
+            (Some(a), Some(b)) if comps.is_empty() && a == b => {}
+            (Some(a), Some(Component::CurDir)) => comps.push(a),
+            (Some(_), Some(Component::ParentDir)) => return None,
+            (Some(a), Some(_)) => {
+                comps.push(Component::ParentDir);
+                comps.extend(itb.map(|_| Component::ParentDir));
+                comps.push(a);
+                comps.extend(ita.by_ref());
+                break;
+            }
+        }
+    }
+
+    Some(comps.iter().map(|c| c.as_os_str()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(path: &str, base: &str) -> Option<PathBuf> {
+        diff_paths(Path::new(path), Path::new(base))
+    }
+
+    #[test]
+    fn test_diff_paths() {
+        assert_eq!(diff("/foo/bar", "/foo/bar"), Some("".into()));
+        assert_eq!(diff("/foo/bar/baz", "/foo"), Some("bar/baz".into()));
+        assert_eq!(diff("/foo", "/foo/bar/baz"), Some("../..".into()));
+        assert_eq!(diff("/foo/bar", "/foo/baz"), Some("../bar".into()));
+        assert_eq!(diff("/foo/bar/baz", "/qux/quux"), Some("../../foo/bar/baz".into()));
+        assert_eq!(diff("/foo", "bar"), Some("/foo".into()));
+        assert_eq!(diff("foo", "/bar"), None);
+        assert_eq!(diff("foo/bar", "foo"), Some("bar".into()));
+        assert_eq!(diff("foo", "foo/bar"), Some("..".into()));
+        assert_eq!(diff("foo", "../bar"), None);
+        assert_eq!(diff("./foo", "."), Some("foo".into()));
     }
 }

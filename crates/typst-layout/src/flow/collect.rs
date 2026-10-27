@@ -92,18 +92,61 @@ impl<'a> Collector<'a, '_, '_> {
 
     /// Perform collection for block-level children.
     fn run_block(&mut self, children: &[Pair<'a>]) -> SourceResult<()> {
+        // Paragraph layout does not depend on the concrete regions, so the
+        // paragraphs of the flow can all be laid out upfront, in parallel. To
+        // get exactly the same result as when laying them out one after the
+        // other, we first assign the locators and paragraph situations in the
+        // order in which the collection below would.
+        let mut locators = Vec::with_capacity(children.len());
+        let mut pars = Vec::new();
+        let mut situation = self.par_situation;
         for &(child, styles) in children {
+            let mut locator = None;
+            if let Some(elem) = child.to_packed::<ParElem>() {
+                let locator = self.locator.next(&elem.span());
+                pars.push((elem, styles, locator, situation));
+                situation = ParSituation::Consecutive;
+            } else if child.is::<BlockElem>() {
+                locator = Some(self.locator.next(&child.span()));
+                situation = ParSituation::Other;
+            } else if child.is::<PlaceElem>() {
+                locator = Some(self.locator.next(&child.span()));
+            } else if child.is::<ColbreakElem>() {
+                situation = ParSituation::First;
+            }
+            locators.push(locator);
+        }
+
+        let (base, expand) = (self.base, self.expand);
+        let layout = move |engine: &mut Engine, (elem, styles, locator, situation)| {
+            crate::inline::layout_par(
+                elem, engine, locator, styles, base, expand, situation,
+            )
+        };
+
+        // Spreading the work over threads has a cost, so we only do it if
+        // there are multiple paragraphs.
+        let mut laid_out: std::vec::IntoIter<SourceResult<Fragment>> = if pars.len() > 1 {
+            self.engine.parallelize(pars, layout).collect::<Vec<_>>().into_iter()
+        } else {
+            pars.into_iter()
+                .map(|par| layout(self.engine, par))
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+
+        for (&(child, styles), locator) in children.iter().zip(locators) {
             if let Some(elem) = child.to_packed::<TagElem>() {
                 self.output.push(Child::Tag(&elem.tag));
             } else if let Some(elem) = child.to_packed::<VElem>() {
                 self.v(elem, styles);
             } else if let Some(elem) = child.to_packed::<ParElem>() {
-                self.par(elem, styles)?;
+                self.par(elem, styles, laid_out.next().unwrap()?);
             } else if let Some(elem) = child.to_packed::<BlockElem>() {
                 let alone = children.len() == 1;
-                self.block(elem, styles, alone);
+                self.block(elem, styles, alone, locator.unwrap());
             } else if let Some(elem) = child.to_packed::<PlaceElem>() {
-                self.place(elem, styles)?;
+                self.place(elem, styles, locator.unwrap())?;
             } else if child.is::<FlushElem>() {
                 self.output.push(Child::Flush);
             } else if let Some(elem) = child.to_packed::<ColbreakElem>() {
@@ -157,23 +200,15 @@ impl<'a> Collector<'a, '_, '_> {
         });
     }
 
-    /// Collect a paragraph into [`LineChild`]ren. This already performs line
-    /// layout since it is not dependent on the concrete regions.
+    /// Collect a paragraph, whose lines were already laid out (since this is
+    /// not dependent on the concrete regions), into [`LineChild`]ren.
     fn par(
         &mut self,
         elem: &'a Packed<ParElem>,
         styles: StyleChain<'a>,
-    ) -> SourceResult<()> {
-        let lines = crate::inline::layout_par(
-            elem,
-            self.engine,
-            self.locator.next(&elem.span()),
-            styles,
-            self.base,
-            self.expand,
-            self.par_situation,
-        )?
-        .into_frames();
+        fragment: Fragment,
+    ) {
+        let lines = fragment.into_frames();
 
         let spacing = elem.spacing.resolve(styles);
         let leading = elem.leading.resolve(styles);
@@ -184,8 +219,6 @@ impl<'a> Collector<'a, '_, '_> {
 
         self.output.push(Child::Rel(spacing.into(), 4));
         self.par_situation = ParSituation::Consecutive;
-
-        Ok(())
     }
 
     /// Collect laid-out lines.
@@ -240,8 +273,8 @@ impl<'a> Collector<'a, '_, '_> {
         elem: &'a Packed<BlockElem>,
         styles: StyleChain<'a>,
         alone: bool,
+        locator: Locator<'a>,
     ) {
-        let locator = self.locator.next(&elem.span());
         let align = styles.resolve(AlignElem::alignment);
         let sticky = elem.sticky.get(styles);
         let breakable = elem.breakable.get(styles);
@@ -291,6 +324,7 @@ impl<'a> Collector<'a, '_, '_> {
         &mut self,
         elem: &'a Packed<PlaceElem>,
         styles: StyleChain<'a>,
+        locator: Locator<'a>,
     ) -> SourceResult<()> {
         let alignment = elem.alignment.get(styles);
         let align_x = alignment.map_or(FixedAlignment::Center, |align| {
@@ -321,7 +355,6 @@ impl<'a> Collector<'a, '_, '_> {
             );
         }
 
-        let locator = self.locator.next(&elem.span());
         let clearance = elem.clearance.resolve(styles);
         let delta = Axes::new(elem.dx.get(styles), elem.dy.get(styles)).resolve(styles);
         self.output.push(Child::Placed(self.boxed(PlacedChild {

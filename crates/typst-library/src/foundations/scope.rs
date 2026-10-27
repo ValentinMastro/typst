@@ -23,6 +23,12 @@ pub struct Scopes<'a> {
     pub top: Scope,
     /// The stack of lower scopes.
     pub scopes: Vec<Scope>,
+    /// Read-only variables captured by the closure being evaluated, if any.
+    ///
+    /// They sit below all other scopes, so that parameters and local
+    /// variables shadow them. Keeping them separate (instead of copying them
+    /// into `top`) avoids cloning the captured scope for every call.
+    pub captured: Option<&'a Scope>,
     /// The standard library.
     pub base: Option<&'a Library>,
 }
@@ -30,7 +36,12 @@ pub struct Scopes<'a> {
 impl<'a> Scopes<'a> {
     /// Create a new, empty hierarchy of scopes.
     pub fn new(base: Option<&'a Library>) -> Self {
-        Self { top: Scope::new(), scopes: vec![], base }
+        Self {
+            top: Scope::new(),
+            scopes: vec![],
+            captured: None,
+            base,
+        }
     }
 
     /// Enter a new scope.
@@ -67,6 +78,7 @@ impl<'a> Scopes<'a> {
     pub fn get_binding(&self, var: &str) -> HintedStrResult<&Binding> {
         std::iter::once(&self.top)
             .chain(self.scopes.iter().rev())
+            .chain(self.captured)
             .find_map(|scope| scope.get(var))
             .or_else(|| {
                 let base = self.base?;
@@ -83,6 +95,7 @@ impl<'a> Scopes<'a> {
     pub fn get_binding_in_math(&self, var: &str) -> HintedStrResult<&Binding> {
         std::iter::once(&self.top)
             .chain(self.scopes.iter().rev())
+            .chain(self.captured)
             .find_map(|scope| scope.get(var))
             .or_else(|| {
                 let base = self.base?;
@@ -118,6 +131,13 @@ impl<'a> Scopes<'a> {
             })
             .transpose()?
             .ok_or_else(|| {
+                if let Some(binding) = self.captured.and_then(|scope| scope.get(var)) {
+                    return match binding.check_write(guard) {
+                        Err(err) => err.cannot(format_args!("access variable `{var}`")),
+                        Ok(()) => cannot_mutate_constant(var),
+                    };
+                }
+
                 match self.base.and_then(|base| base.global.scope().get(var)) {
                     Some(binding) => match binding.read(guard) {
                         Err(err) => err.cannot(format_args!("access variable `{var}`")),
@@ -134,6 +154,7 @@ impl<'a> Scopes<'a> {
         self.base.is_some_and(|base| base.global.scope().get(var).is_some())
             && std::iter::once(&self.top)
                 .chain(self.scopes.iter().rev())
+                .chain(self.captured)
                 .any(|scope| scope.get(var).is_some())
     }
 }
@@ -432,6 +453,12 @@ impl Binding {
         &mut self,
         guard: impl BindingGuard,
     ) -> Result<&mut Value, BindingError> {
+        self.check_write(guard)?;
+        Ok(&mut self.value)
+    }
+
+    /// Check whether the binding may be written to.
+    fn check_write(&self, guard: impl BindingGuard) -> Result<(), BindingError> {
         if self.check_access {
             self.check_access(guard)?;
         }
@@ -440,7 +467,7 @@ impl Binding {
             return Err(BindingError::Captured(capturer));
         }
 
-        Ok(&mut self.value)
+        Ok(())
     }
 
     /// Check if the binding is gated behind a feature or if it is deprecated.

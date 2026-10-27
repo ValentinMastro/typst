@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ecow::{EcoString, eco_format};
 use typst_syntax::FileId;
+use typst_utils::LazyHash;
 
 use crate::diag::{HintedStrResult, bail};
 use crate::foundations::{BindingAccess, BindingGuard, Content, Repr, Scope, Value, ty};
@@ -50,7 +51,12 @@ pub struct Module {
     /// The module's name.
     name: Option<EcoString>,
     /// The reference-counted inner fields.
-    inner: Arc<ModuleInner>,
+    ///
+    /// Their hash is cached and shared between all clones of the module.
+    /// Modules can be large (e.g. a whole imported file or a package) and
+    /// are hashed as part of every closure that captures them, which is
+    /// needed to memoize the calls to that closure.
+    inner: Arc<LazyHash<ModuleInner>>,
 }
 
 /// The internal representation of a [`Module`].
@@ -69,11 +75,11 @@ impl Module {
     pub fn new(name: impl Into<EcoString>, scope: Scope) -> Self {
         Self {
             name: Some(name.into()),
-            inner: Arc::new(ModuleInner {
+            inner: Arc::new(LazyHash::new(ModuleInner {
                 scope,
                 content: Content::empty(),
                 file_id: None,
-            }),
+            })),
         }
     }
 
@@ -81,11 +87,11 @@ impl Module {
     pub fn anonymous(scope: Scope) -> Self {
         Self {
             name: None,
-            inner: Arc::new(ModuleInner {
+            inner: Arc::new(LazyHash::new(ModuleInner {
                 scope,
                 content: Content::empty(),
                 file_id: None,
-            }),
+            })),
         }
     }
 
@@ -155,7 +161,7 @@ impl Module {
     /// Extract the module's content.
     pub fn content(self) -> Content {
         match Arc::try_unwrap(self.inner) {
-            Ok(repr) => repr.content,
+            Ok(repr) => repr.into_inner().content,
             Err(arc) => arc.content.clone(),
         }
     }

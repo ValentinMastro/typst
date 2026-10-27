@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
-use std::ops::{Add, AddAssign};
+use std::ops::{Add, AddAssign, Deref, DerefMut};
 use std::sync::Arc;
 
 use comemo::Tracked;
@@ -9,6 +9,7 @@ use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use typst_syntax::{Spanned, is_ident};
+use typst_utils::LazyHash;
 
 use crate::diag::{CallSpanned, Hint, HintedStrResult, SourceResult, StrResult};
 use crate::engine::Engine;
@@ -77,8 +78,40 @@ pub use crate::__dict as dict;
 /// #("name" in dict)
 /// ```
 #[ty(scope, cast, name = "dictionary", since = "forever")]
-#[derive(Default, Clone, PartialEq)]
-pub struct Dict(Arc<IndexMap<Str, Value, FxBuildHasher>>);
+#[derive(Default, Clone)]
+pub struct Dict(Arc<LazyHash<DictMap>>);
+
+/// The map backing a dictionary.
+///
+/// It is wrapped in a [`LazyHash`] so that a dictionary's hash is computed at
+/// most once and shared between all clones of it. This matters because
+/// values are hashed whenever they are passed to a memoized function, for
+/// instance as an argument of a closure call.
+#[derive(Default, Clone)]
+struct DictMap(IndexMap<Str, Value, FxBuildHasher>);
+
+impl Deref for DictMap {
+    type Target = IndexMap<Str, Value, FxBuildHasher>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for DictMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Hash for DictMap {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.0.len());
+        for item in &self.0 {
+            item.hash(state);
+        }
+    }
+}
 
 impl Dict {
     /// Create a new, empty dictionary.
@@ -405,18 +438,23 @@ impl Add for Dict {
 impl AddAssign for Dict {
     fn add_assign(&mut self, rhs: Dict) {
         match Arc::try_unwrap(rhs.0) {
-            Ok(map) => self.extend(map),
+            Ok(map) => self.extend(map.into_inner().0),
             Err(rc) => self.extend(rc.iter().map(|(k, v)| (k.clone(), v.clone()))),
         }
     }
 }
 
+impl PartialEq for Dict {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare the maps themselves, not their hashes like `LazyHash` does:
+        // map equality ignores the order of the pairs while hashing doesn't.
+        self.0.0 == other.0.0
+    }
+}
+
 impl Hash for Dict {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_usize(self.0.len());
-        for item in self {
-            item.hash(state);
-        }
+        self.0.hash(state);
     }
 }
 
@@ -425,7 +463,7 @@ impl Serialize for Dict {
     where
         S: Serializer,
     {
-        self.0.serialize(serializer)
+        self.0.0.serialize(serializer)
     }
 }
 
@@ -446,7 +484,7 @@ impl Extend<(Str, Value)> for Dict {
 
 impl FromIterator<(Str, Value)> for Dict {
     fn from_iter<T: IntoIterator<Item = (Str, Value)>>(iter: T) -> Self {
-        Self(Arc::new(iter.into_iter().collect()))
+        Self::from(iter.into_iter().collect::<IndexMap<_, _, _>>())
     }
 }
 
@@ -455,7 +493,7 @@ impl IntoIterator for Dict {
     type IntoIter = indexmap::map::IntoIter<Str, Value>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Arc::unwrap_or_clone(self.0).into_iter()
+        Arc::unwrap_or_clone(self.0).into_inner().0.into_iter()
     }
 }
 
@@ -470,7 +508,7 @@ impl<'a> IntoIterator for &'a Dict {
 
 impl From<IndexMap<Str, Value, FxBuildHasher>> for Dict {
     fn from(map: IndexMap<Str, Value, FxBuildHasher>) -> Self {
-        Self(Arc::new(map))
+        Self(Arc::new(LazyHash::new(DictMap(map))))
     }
 }
 

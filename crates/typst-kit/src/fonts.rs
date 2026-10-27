@@ -170,9 +170,18 @@ pub fn scan(path: &std::path::Path) -> impl Iterator<Item = (FontPath, FontInfo)
 fn with_db(
     f: impl FnOnce(&mut fontdb::Database),
 ) -> impl Iterator<Item = (FontPath, FontInfo)> {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
     let mut db = fontdb::Database::new();
     f(&mut db);
-    db.faces()
+
+    // Computing a face's info requires parsing its full character map, which
+    // dominates the cost of font discovery. Faces are independent, so we
+    // process them in parallel. The indexed parallel iterator preserves the
+    // order of the faces, which keeps the resulting font indices stable.
+    let faces: Vec<_> = db.faces().collect();
+    faces
+        .into_par_iter()
         .filter_map(|face| {
             let path = match &face.source {
                 fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => path,

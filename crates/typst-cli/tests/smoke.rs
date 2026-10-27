@@ -510,6 +510,40 @@ fn test_template_path_absolute() {
 }
 
 #[test]
+fn test_template_nested_directories() {
+    let project = tempfs();
+    let package = tempfs();
+    package.write(
+        "local/nested/0.1.0/typst.toml",
+        r#"[package]
+           name = "nested"
+           version = "0.1.0"
+           entrypoint = "lib.typ"
+
+           [template]
+           path = "template"
+           entrypoint = "main.typ""#,
+    );
+    package.write("local/nested/0.1.0/lib.typ", "");
+    package.write("local/nested/0.1.0/template/main.typ", "Main");
+    package.write("local/nested/0.1.0/template/chapters/intro.typ", "Intro");
+    package.write("local/nested/0.1.0/template/assets/img/logo.bin", [0, 1, 2, 255]);
+    exec()
+        .arg("init")
+        .arg("@local/nested:0.1.0")
+        .arg(project.path().join("project"))
+        .arg("--package-path")
+        .arg(package.path())
+        .must_succeed();
+    project.read("project/main.typ").must_match_lines(["Main"]);
+    project.read("project/chapters/intro.typ").must_match_lines(["Intro"]);
+    assert_eq!(project.read("project/assets/img/logo.bin").0, [0, 1, 2, 255]);
+    assert!(!project.resolve("project/lib.typ").exists());
+    assert!(!project.resolve("project/typst.toml").exists());
+    assert!(!project.resolve("project/template").exists());
+}
+
+#[test]
 fn test_network_access_hint() {
     // Using a CLI test because the error message differs across operating
     // systems. If the test runner could handle that, we could migrate to a
